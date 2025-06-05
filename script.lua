@@ -147,7 +147,7 @@ local currentFieldPos = Vector3.new(-750.04, 73.12, -92.81) -- Default field pos
 local HIVE_POSITION = Vector3.new(-723.39, 74.99, 27.44) -- Default hive position
 local DEFAULT_TWEEN_SPEED = 20 -- Default speed (higher is slower)
 
-local INACTIVITY_THRESHOLD = 7
+local INACTIVITY_THRESHOLD = 4
 local POLLEN_CHECK_INTERVAL = 0.3
 local FIELD_RADIUS = 50
 local TOKEN_CHECK_INTERVAL = 0.5
@@ -166,6 +166,7 @@ local GUI_COLOR = Color3.fromRGB(40, 40, 40)
 local ACCENT_COLOR = Color3.fromRGB(0, 170, 255)
 local STOP_COLOR = Color3.fromRGB(255, 60, 60)
 local FIRE_COLOR = Color3.fromRGB(255, 100, 0) -- Orange color for fire button
+local FIRE_ENABLED_COLOR = Color3.fromRGB(0, 200, 0) -- Green when enabled
 
 -- State tracking
 local lastPollenValue = 0
@@ -181,7 +182,7 @@ local guiVisible = true
 local currentTween = nil
 local isTraveling = false
 local currentTweenSpeed = DEFAULT_TWEEN_SPEED
-local fireFarmingEnabled = true -- Always enabled now
+local fireFarmingEnabled = true -- Default enabled
 local lastFirePosition = nil
 local lastFireScanTime = 0
 local collectedFires = {} -- Track recently collected fires
@@ -419,12 +420,12 @@ local speedSetCorner = uICorner:Clone()
 speedSetCorner.CornerRadius = UDim.new(0, 4)
 speedSetCorner.Parent = speedSetButton
 
--- Fire Farming Toggle (kept but now shows status)
+-- Fire Farming Toggle
 local fireButton = Instance.new("TextButton")
 fireButton.Name = "FireButton"
 fireButton.Size = UDim2.new(0.4, 0, 0, isMobile and 40 or 30)
 fireButton.Position = UDim2.new(0.05, 0, 0, isMobile and 270 or 210)
-fireButton.BackgroundColor3 = Color3.fromRGB(0, 200, 0) -- Green since always on
+fireButton.BackgroundColor3 = FIRE_ENABLED_COLOR
 fireButton.Text = "FIRE: ON"
 fireButton.TextColor3 = Color3.new(1, 1, 1)
 fireButton.Font = Enum.Font.GothamBold
@@ -547,74 +548,22 @@ end
 speedSetButton.MouseButton1Click:Connect(setTweenSpeed)
 speedSetButton.TouchTap:Connect(setTweenSpeed)
 
--- Fire scanning function (modified to avoid recently collected fires)
-local function scanForFires()
-    local closestFire = nil
-    local closestDistance = math.huge
-    local hrpPos = hrp.Position
+-- Toggle Fire Farming
+local function toggleFireFarming()
+    fireFarmingEnabled = not fireFarmingEnabled
+    fireButton.Text = "FIRE: "..(fireFarmingEnabled and "ON" or "OFF")
+    fireButton.BackgroundColor3 = fireFarmingEnabled and FIRE_ENABLED_COLOR or FIRE_COLOR
     
-    -- Clean up old collected fires
-    local currentTime = os.time()
-    for firePos, expireTime in pairs(collectedFires) do
-        if currentTime > expireTime then
-            collectedFires[firePos] = nil
-        end
+    if not fireFarmingEnabled and currentTargetFire then
+        currentTargetFire = nil
+        humanoid:MoveTo(hrp.Position)
     end
     
-    local containers = {
-        workspace:FindFirstChild("Fires"),
-        workspace:FindFirstChild("Effects"),
-        workspace:FindFirstChild("Debris")
-    }
-    
-    for _, container in pairs(containers) do
-        if container then
-            for _, part in pairs(container:GetDescendants()) do
-                if part:IsA("BasePart") and part.Name == FIRE_NAME and not string.find(part.Name, IGNORE_NAME) then
-                    -- Skip if this fire was recently collected
-                    if not collectedFires[tostring(part.Position)] then
-                        local distance = (part.Position - hrpPos).Magnitude
-                        if distance < closestDistance and distance <= FIRE_DETECTION_RANGE then
-                            closestDistance = distance
-                            closestFire = part
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    return closestFire, closestDistance
+    statusText.Text = "Fire Farming: "..(fireFarmingEnabled and "ON" or "OFF").."\nSpeed: "..currentTweenSpeed
 end
 
--- Modified moveToFire function that integrates with main farming
-local function checkAndCollectFire()
-    if not scriptRunning then return false end
-    
-    local now = os.clock()
-    if now - lastFireScanTime > FIRE_SCAN_INTERVAL then
-        lastFireScanTime = now
-        
-        local fire, distance = scanForFires()
-        if fire then
-            -- Mark this fire position as collected
-            collectedFires[tostring(fire.Position)] = os.time() + FIRE_COOLDOWN
-            currentTargetFire = fire.Position
-            
-            -- Move to fire
-            humanoid:MoveTo(fire.Position)
-            humanoid.MoveToFinished:Wait()
-            
-            -- Wait a moment at the fire
-            wait(1)
-            
-            -- Clear current target
-            currentTargetFire = nil
-            return true
-        end
-    end
-    return false
-end
+fireButton.MouseButton1Click:Connect(toggleFireFarming)
+fireButton.TouchTap:Connect(toggleFireFarming)
 
 -- GUI dragging
 local dragging, dragInput, dragStart, startPos
@@ -732,6 +681,77 @@ local function collectTokens()
         humanoid:MoveTo(token.Position)
         humanoid.MoveToFinished:Wait()
     end
+end
+
+-- Fire scanning function (modified to avoid recently collected fires)
+local function scanForFires()
+    if not fireFarmingEnabled then return nil, math.huge end
+    
+    local closestFire = nil
+    local closestDistance = math.huge
+    local hrpPos = hrp.Position
+    
+    -- Clean up old collected fires
+    local currentTime = os.time()
+    for firePos, expireTime in pairs(collectedFires) do
+        if currentTime > expireTime then
+            collectedFires[firePos] = nil
+        end
+    end
+    
+    local containers = {
+        workspace:FindFirstChild("Fires"),
+        workspace:FindFirstChild("Effects"),
+        workspace:FindFirstChild("Debris")
+    }
+    
+    for _, container in pairs(containers) do
+        if container then
+            for _, part in pairs(container:GetDescendants()) do
+                if part:IsA("BasePart") and part.Name == FIRE_NAME and not string.find(part.Name, IGNORE_NAME) then
+                    -- Skip if this fire was recently collected
+                    if not collectedFires[tostring(part.Position)] then
+                        local distance = (part.Position - hrpPos).Magnitude
+                        if distance < closestDistance and distance <= FIRE_DETECTION_RANGE then
+                            closestDistance = distance
+                            closestFire = part
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closestFire, closestDistance
+end
+
+-- Modified moveToFire function that integrates with main farming
+local function checkAndCollectFire()
+    if not scriptRunning or not fireFarmingEnabled then return false end
+    
+    local now = os.clock()
+    if now - lastFireScanTime > FIRE_SCAN_INTERVAL then
+        lastFireScanTime = now
+        
+        local fire, distance = scanForFires()
+        if fire then
+            -- Mark this fire position as collected
+            collectedFires[tostring(fire.Position)] = os.time() + FIRE_COOLDOWN
+            currentTargetFire = fire.Position
+            
+            -- Move to fire
+            humanoid:MoveTo(fire.Position)
+            humanoid.MoveToFinished:Wait()
+            
+            -- Wait a moment at the fire
+            wait(1)
+            
+            -- Clear current target
+            currentTargetFire = nil
+            return true
+        end
+    end
+    return false
 end
 
 -- Movement detection

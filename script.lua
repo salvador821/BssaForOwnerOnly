@@ -945,7 +945,7 @@ end
 
 -- Honey conversion
 local function convertPollen()
-    if isConverting then return false end
+    if isConverting or currentMarkTarget then return false end
     isConverting = true
     statusText.Text = "Converting..."
     

@@ -977,7 +977,9 @@ player.CharacterAdded:Connect(function(newChar)
     isTraveling = false
     isConverting = false
     currentTargetFire = nil
+    currentMarkTarget = nil
     collectedFires = {}
+    honeyMarkCache = {}
 end)
 
 -- Main loop
@@ -989,39 +991,45 @@ while true do
     end
 
     if scriptRunning then
-        -- First check for fires (highest priority)
-        local foundFire = checkAndCollectFire()
+        -- First check for marks (highest priority)
+        local foundMark = checkAndCollectMarks()
         
-        -- Only proceed with normal farming if no fire was found
-        if not foundFire then
-            local currentPollen = getCurrentPollen()
-            local atField = character:FindFirstChild("HumanoidRootPart") and 
-                           (character.HumanoidRootPart.Position - currentFieldPos).Magnitude < FIELD_RADIUS
-            local atHive = character:FindFirstChild("HumanoidRootPart") and 
-                          (character.HumanoidRootPart.Position - HIVE_POSITION).Magnitude < FIELD_RADIUS
-            local isStationary = checkIfStationary()
+        -- Only proceed if no mark was found or we're waiting at one
+        if not foundMark or os.time() >= atMarkUntil then
+            -- Then check for fires (medium priority)
+            local foundFire = checkAndCollectFire()
+            
+            -- Only proceed with normal farming if no fire was found
+            if not foundFire then
+                local currentPollen = getCurrentPollen()
+                local atField = character:FindFirstChild("HumanoidRootPart") and 
+                               (character.HumanoidRootPart.Position - currentFieldPos).Magnitude < FIELD_RADIUS
+                local atHive = character:FindFirstChild("HumanoidRootPart") and 
+                              (character.HumanoidRootPart.Position - HIVE_POSITION).Magnitude < FIELD_RADIUS
+                local isStationary = checkIfStationary()
 
-            if atField then
-                if currentPollen > lastPollenValue then
-                    statusText.Text = string.format("Status: Collecting\nPollen: %d\nSpeed: %d", currentPollen, currentTweenSpeed)
-                    lastIncreaseTime = os.time()
-                elseif os.time() - lastIncreaseTime > INACTIVITY_THRESHOLD and isStationary then
-                    tweenTo(HIVE_POSITION, "Hive")
-                end
-                lastPollenValue = currentPollen
-            elseif atHive then
-                if currentPollen > 0 then
-                    convertPollen()
-                else
+                if atField then
+                    if currentPollen > lastPollenValue then
+                        statusText.Text = string.format("Status: Collecting\nPollen: %d\nSpeed: %d", currentPollen, currentTweenSpeed)
+                        lastIncreaseTime = os.time()
+                    elseif os.time() - lastIncreaseTime > INACTIVITY_THRESHOLD and isStationary then
+                        tweenTo(HIVE_POSITION, "Hive")
+                    end
+                    lastPollenValue = currentPollen
+                elseif atHive then
+                    if currentPollen > 0 then
+                        convertPollen()
+                    else
+                        tweenTo(currentFieldPos, "Field")
+                    end
+                elseif not currentTween and not isConverting then
                     tweenTo(currentFieldPos, "Field")
                 end
-            elseif not currentTween and not isConverting then
-                tweenTo(currentFieldPos, "Field")
-            end
 
-            -- Collect tokens if not currently targeting a fire
-            if not currentTargetFire then
-                collectTokens()
+                -- Collect tokens if not currently targeting anything
+                if not currentTargetFire and not currentMarkTarget then
+                    collectTokens()
+                end
             end
         end
     end

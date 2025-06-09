@@ -147,11 +147,12 @@ local currentFieldPos = Vector3.new(-750.04, 73.12, -92.81) -- Default field pos
 local HIVE_POSITION = Vector3.new(-723.39, 74.99, 27.44) -- Default hive position
 local DEFAULT_TWEEN_SPEED = 20 -- Default speed (higher is slower)
 
-local INACTIVITY_THRESHOLD = 4
-local POLLEN_CHECK_INTERVAL = 0.3
-local FIELD_RADIUS = 50
-local TOKEN_CHECK_INTERVAL = 0.5
-local MAX_TOKEN_DISTANCE = 100
+-- Marks Configuration
+local MARK_SCAN_INTERVAL = 1.5
+local MARK_TELEPORT_OFFSET = Vector3.new(0, 3, 0)
+local MARK_MAX_DISTANCE = 150
+local MARK_MAX_TARGETS = 50
+local MARK_STAY_DURATION = 3 -- Seconds to stay at mark
 
 -- Fire Configuration
 local FIRE_DETECTION_RANGE = 150
@@ -165,8 +166,10 @@ local FIRE_COOLDOWN = 5 -- Seconds before revisiting same fire
 local GUI_COLOR = Color3.fromRGB(40, 40, 40)
 local ACCENT_COLOR = Color3.fromRGB(0, 170, 255)
 local STOP_COLOR = Color3.fromRGB(255, 60, 60)
-local FIRE_COLOR = Color3.fromRGB(255, 100, 0) -- Orange color for fire button
-local FIRE_ENABLED_COLOR = Color3.fromRGB(0, 200, 0) -- Green when enabled
+local FIRE_COLOR = Color3.fromRGB(255, 100, 0)
+local FIRE_ENABLED_COLOR = Color3.fromRGB(0, 200, 0)
+local MARK_COLOR = Color3.fromRGB(255, 215, 0) -- Gold color for marks
+local MARK_ENABLED_COLOR = Color3.fromRGB(0, 200, 0)
 
 -- State tracking
 local lastPollenValue = 0
@@ -182,11 +185,16 @@ local guiVisible = true
 local currentTween = nil
 local isTraveling = false
 local currentTweenSpeed = DEFAULT_TWEEN_SPEED
-local fireFarmingEnabled = true -- Default enabled
+local fireFarmingEnabled = true
+local markFarmingEnabled = true
 local lastFirePosition = nil
 local lastFireScanTime = 0
-local collectedFires = {} -- Track recently collected fires
+local collectedFires = {}
 local currentTargetFire = nil
+local honeyMarkCache = {}
+local currentMarkTarget = nil
+local markCooldownUntil = 0
+local atMarkUntil = 0
 
 -- Get references
 local player = Players.LocalPlayer
@@ -204,7 +212,7 @@ screenGui.DisplayOrder = 10
 -- Mobile-friendly GUI sizing
 local isMobile = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 local guiWidth = isMobile and 350 or 300
-local guiHeight = isMobile and 340 or 300 -- Increased height for fire button
+local guiHeight = isMobile and 380 or 340 -- Increased height for new button
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
@@ -436,11 +444,27 @@ local fireCorner = uICorner:Clone()
 fireCorner.CornerRadius = UDim.new(0, 6)
 fireCorner.Parent = fireButton
 
+-- Mark Farming Toggle
+local markButton = Instance.new("TextButton")
+markButton.Name = "MarkButton"
+markButton.Size = UDim2.new(0.4, 0, 0, isMobile and 40 or 30)
+markButton.Position = UDim2.new(0.55, 0, 0, isMobile and 270 or 210)
+markButton.BackgroundColor3 = MARK_ENABLED_COLOR
+markButton.Text = "MARKS: ON"
+markButton.TextColor3 = Color3.new(1, 1, 1)
+markButton.Font = Enum.Font.GothamBold
+markButton.TextSize = isMobile and 14 or 12
+markButton.Parent = mainFrame
+
+local markCorner = uICorner:Clone()
+markCorner.CornerRadius = UDim.new(0, 6)
+markCorner.Parent = markButton
+
 -- Control buttons
 local toggleButton = Instance.new("TextButton")
 toggleButton.Name = "ToggleButton"
 toggleButton.Size = UDim2.new(0.4, 0, 0, isMobile and 40 or 30)
-toggleButton.Position = UDim2.new(0.55, 0, 0, isMobile and 270 or 210)
+toggleButton.Position = UDim2.new(0.05, 0, 0, isMobile and 320 or 250)
 toggleButton.BackgroundColor3 = ACCENT_COLOR
 toggleButton.Text = "STOP"
 toggleButton.TextColor3 = Color3.new(1, 1, 1)
@@ -565,6 +589,23 @@ end
 fireButton.MouseButton1Click:Connect(toggleFireFarming)
 fireButton.TouchTap:Connect(toggleFireFarming)
 
+-- Toggle Mark Farming
+local function toggleMarkFarming()
+    markFarmingEnabled = not markFarmingEnabled
+    markButton.Text = "MARKS: "..(markFarmingEnabled and "ON" or "OFF")
+    markButton.BackgroundColor3 = markFarmingEnabled and MARK_ENABLED_COLOR or MARK_COLOR
+    
+    if not markFarmingEnabled and currentMarkTarget then
+        currentMarkTarget = nil
+        humanoid:MoveTo(hrp.Position)
+    end
+    
+    statusText.Text = "Mark Farming: "..(markFarmingEnabled and "ON" or "OFF").."\nSpeed: "..currentTweenSpeed
+end
+
+markButton.MouseButton1Click:Connect(toggleMarkFarming)
+markButton.TouchTap:Connect(toggleMarkFarming)
+
 -- GUI dragging
 local dragging, dragInput, dragStart, startPos
 
@@ -671,7 +712,7 @@ local function getNearestToken()
 end
 
 local function collectTokens()
-    if os.clock() - lastTokenCheck < TOKEN_CHECK_INTERVAL or isTraveling or currentTargetFire then 
+    if os.clock() - lastTokenCheck < TOKEN_CHECK_INTERVAL or isTraveling or currentTargetFire or currentMarkTarget then 
         return 
     end
     lastTokenCheck = os.clock()
@@ -683,7 +724,7 @@ local function collectTokens()
     end
 end
 
--- Fire scanning function (modified to avoid recently collected fires)
+-- Fire scanning function
 local function scanForFires()
     if not fireFarmingEnabled then return nil, math.huge end
     
@@ -725,9 +766,99 @@ local function scanForFires()
     return closestFire, closestDistance
 end
 
--- Modified moveToFire function that integrates with main farming
+-- Mark scanning function
+local function scanForMarks()
+    if not markFarmingEnabled or os.time() < markCooldownUntil then return nil end
+    
+    -- Clear old cache periodically
+    if os.time() - lastFireScanTime > 10 then
+        table.clear(honeyMarkCache)
+    end
+
+    local closestMark = nil
+    local closestDist = math.huge
+    local targetsChecked = 0
+
+    -- First check cached targets
+    for _, target in pairs(honeyMarkCache) do
+        if target and target.Parent then
+            local dist = (hrp.Position - target.Position).Magnitude
+            if dist < closestDist and dist <= MARK_MAX_DISTANCE then
+                closestMark = target
+                closestDist = dist
+            end
+            targetsChecked += 1
+        end
+    end
+
+    -- If no good cached target, scan workspace (limited)
+    if not closestMark then
+        table.clear(honeyMarkCache)
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if targetsChecked >= MARK_MAX_TARGETS then break end
+            
+            if obj:IsA("BasePart") and string.find(string.lower(obj.Name), "honey mark", 1, true) then
+                local dist = (hrp.Position - obj.Position).Magnitude
+                if dist <= MARK_MAX_DISTANCE then
+                    honeyMarkCache[obj] = obj
+                    if dist < closestDist then
+                        closestMark = obj
+                        closestDist = dist
+                    end
+                    targetsChecked += 1
+                end
+            end
+        end
+    end
+
+    return closestMark
+end
+
+-- Teleport to mark function
+local function teleportToMark(target)
+    if not target or not target.Parent then return false end
+    
+    -- Validate position first
+    local targetPos = target.Position + MARK_TELEPORT_OFFSET
+    if targetPos.Y < -500 or targetPos.Magnitude > 9000 then  -- Safety check
+        warn("Invalid teleport position")
+        return false
+    end
+
+    -- Use CFrame to maintain orientation
+    character:SetPrimaryPartCFrame(CFrame.new(targetPos, targetPos + hrp.CFrame.LookVector))
+    atMarkUntil = os.time() + MARK_STAY_DURATION
+    return true
+end
+
+-- Check and collect marks (highest priority)
+local function checkAndCollectMarks()
+    if not scriptRunning or not markFarmingEnabled or os.time() < markCooldownUntil then return false end
+    
+    if os.time() < atMarkUntil then
+        -- Still waiting at mark
+        return true
+    end
+    
+    local mark = scanForMarks()
+    if mark then
+        currentMarkTarget = mark
+        if teleportToMark(mark) then
+            return true
+        else
+            currentMarkTarget = nil
+            markCooldownUntil = os.time() + 5 -- Cooldown if teleport failed
+            return false
+        end
+    else
+        currentMarkTarget = nil
+        return false
+    end
+end
+
+-- Check and collect fires (medium priority)
 local function checkAndCollectFire()
-    if not scriptRunning or not fireFarmingEnabled then return false end
+    if not scriptRunning or not fireFarmingEnabled or currentMarkTarget then return false end
     
     local now = os.clock()
     if now - lastFireScanTime > FIRE_SCAN_INTERVAL then
@@ -756,7 +887,7 @@ end
 
 -- Movement detection
 local function checkIfStationary()
-    if not character:FindFirstChild("HumanoidRootPart") or isTraveling or currentTargetFire then 
+    if not character:FindFirstChild("HumanoidRootPart") or isTraveling or currentTargetFire or currentMarkTarget then 
         return false 
     end
     
@@ -774,7 +905,7 @@ end
 
 -- Tween movement function
 local function tweenTo(targetPos, locationName)
-    if not character or not character:FindFirstChild("HumanoidRootPart") or not scriptRunning then 
+    if not character or not character:FindFirstChild("HumanoidRootPart") or not scriptRunning or currentMarkTarget then 
         return false 
     end
     

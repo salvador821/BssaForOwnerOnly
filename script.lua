@@ -142,6 +142,13 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
+-- Constants
+local FIELD_RADIUS = 30
+local INACTIVITY_THRESHOLD = 10
+local POLLEN_CHECK_INTERVAL = 0.5
+local MAX_TOKEN_DISTANCE = 50
+local TOKEN_CHECK_INTERVAL = 5
+
 -- Field Configuration (now customizable)
 local currentFieldPos = Vector3.new(-750.04, 73.12, -92.81) -- Default field position
 local HIVE_POSITION = Vector3.new(-723.39, 74.99, 27.44) -- Default hive position
@@ -195,6 +202,7 @@ local honeyMarkCache = {}
 local currentMarkTarget = nil
 local markCooldownUntil = 0
 local atMarkUntil = 0
+local lastMarkScanTime = 0
 
 -- Get references
 local player = Players.LocalPlayer
@@ -724,7 +732,7 @@ local function collectTokens()
     end
 end
 
--- Fire scanning function
+-- Optimized fire scanning function
 local function scanForFires()
     if not fireFarmingEnabled then return nil, math.huge end
     
@@ -766,9 +774,16 @@ local function scanForFires()
     return closestFire, closestDistance
 end
 
--- Mark scanning function
+-- Optimized mark scanning function
 local function scanForMarks()
     if not markFarmingEnabled or os.time() < markCooldownUntil then return nil end
+    
+    -- Only scan every MARK_SCAN_INTERVAL seconds to reduce lag
+    local now = os.clock()
+    if now - lastMarkScanTime < MARK_SCAN_INTERVAL then
+        return nil
+    end
+    lastMarkScanTime = now
     
     -- Clear old cache periodically
     if os.time() - lastFireScanTime > 10 then
